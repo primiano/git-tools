@@ -1,0 +1,357 @@
+#!/usr/bin/env python
+# -*- mode:python -*-
+
+# Copyright (c) 2014 Primiano Tucci -- www.primianotucci.com
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# * Redistributions of source code must retain the above copyright notice, this
+#   list of conditions and the following disclaimer.
+# * Redistributions in binary form must reproduce the above copyright notice,
+#   this list of conditions and the following disclaimer in the documentation
+#   and/or other materials provided with the distribution.
+# * The name of Primiano Tucci may not be used to endorse or promote products
+#   derived from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+import operator
+import optparse
+import os
+import sys
+
+from async import IteratorReader
+from datetime import datetime
+
+try:
+  import gitdb
+except:
+  print 'Please pip install gitdb'
+  sys.exit(1)
+
+
+def main():
+  parser = optparse.OptionParser()
+  parser.add_option('--pack-dir', help='Directory containing pack files',
+                    default='.')
+  parser.add_option('--list-orphan-trees', action='store_true', default=False)
+  parser.add_option('--list-orphan-blobs', action='store_true', default=False)
+  parser.add_option('--list-commits', action='store_true', default=False)
+  parser.add_option('--list-files', action='store_true', default=False)
+  parser.add_option('--all', '-a', action='store_true', default=False)
+  parser.add_option('--verbose', '-v', action='store_true', default=False)
+  parser.add_option('--list-trees-contents', action='store_true', default=False)
+
+
+  (options, _) = parser.parse_args()
+  if options.all:
+    options.list_orphan_trees = options.list_orphan_blobs = True
+    options.list_files = options.list_commits = True
+
+  pack_dir = os.path.abspath(options.pack_dir)
+  print  >>sys.stderr, 'Loading all .pack(s) from ' + pack_dir
+  db = gitdb.db.pack.PackedDB(pack_dir)
+  trees = {}
+  blobs = {}
+  commits = {}
+  count = 0
+  total_size = 0
+
+  sha_reader = IteratorReader(db.sha_iter())
+  info_reader = db.info_async(sha_reader)
+
+  try:
+    for sha, objtype, size in info_reader:
+      total_size += size
+      if objtype == 'tree':
+        tree = GitTree(sha, db.stream(sha)[3].read())
+        trees[sha] = tree
+      elif objtype == 'blob':
+        blobs[sha] = GitFile(sha, size, db.stream(sha)[3].read(256))
+      elif objtype == 'commit':
+        commits[sha] = GitCommit(sha, db.stream(sha)[3].read())
+
+      count += 1
+      if count & 0xff == 0:
+        print >>sys.stderr, (
+            '\rRead %d objects (%d Kb)' % (count, total_size / 1024)),
+        sys.stderr.flush()
+  except KeyboardInterrupt:
+    print  >>sys.stderr, '\nInterrupted. Continuing with objects loaded so far.'
+
+  if count == 0:
+    print >>sys.stderr, 'No objects found.'
+    sys.exit(1)
+
+  print >>sys.stderr, '\nReconstructing tree hierarchy'
+  for tree in trees.itervalues():
+    for name, sha in tree.children.iteritems():
+      blob = blobs.get(sha)
+      if blob:
+        blob.parents.add(tree)
+        blob.names.add(name)
+        tree.files[name] = blob
+        continue
+
+      subtree = trees.get(sha)
+      if subtree:
+        tree.subtrees[name] = subtree
+        subtree.parents.add(tree)
+        continue
+
+      tree.unknowns[name] = sha
+
+  print >>sys.stderr, 'Building commit -> {tree,file} reachability graph'
+  def traverse(parent_commit, tree):
+    tree.parent_commits.add(parent_commit)
+    for subtree in tree.subtrees.itervalues():
+      traverse(parent_commit, subtree)
+    for f in tree.files.itervalues():
+      f.parent_commits.add(parent_commit)
+
+  for commit in commits.itervalues():
+    commit.tree = trees.get(commit.treeish)
+    if commit.tree:
+      commit.tree.direct_parent_commits.add(commit)
+      traverse(commit, commit.tree)
+    for par_sha in commit.parentish:
+      par_commit = commits.get(par_sha)
+      if par_commit:
+        commit.parents.add(par_commit)
+
+  orphan_trees = set((t for t in trees.itervalues()
+                      if not t.parents and not t.parent_commits))
+  orphan_blobs = set((b for b in blobs.itervalues() if not b.parents))
+  root_commits = set((c for c in commits.itervalues() if not c.parents))
+
+  print >>sys.stderr, ''
+  print >>sys.stderr, 'Note: all sizes are after decompression and do NOT'
+  print >>sys.stderr, 'reflect the actual size of objects in the pack files.'
+  print
+  print '============================= TOTALS ============================='
+  print 'Objects:         %d ' % count
+  print '  Commits:       %d ' % len(commits)
+  print '    Root:        %d  (commits not reachable by other commits)' % (
+      len(root_commits))
+  print '    Reachable:   %d ' % (len(commits) - len(root_commits))
+  print '  Trees:         %d ' % len(trees)
+  print '    Orphans:     %d  (trees not referenced by any commit)' % (
+      len(orphan_trees))
+  print '  Blobs:         %d ' % len(blobs)
+  print '    Orphans:     %d  (blobs not referenced by any tree)' % (
+      len(orphan_blobs))
+  print '  Unknown:       %d ' % (
+      count - (len(commits) + len(trees) + len(blobs)))
+  print '=================================================================='
+
+  if options.list_commits:
+    print
+    print '========================== ROOT COMMITS =========================='
+    total_blobs_count, total_blobs_size = (0, 0)
+    for commit in sorted(commits.itervalues(), key=lambda x:x.timestamp):
+      if commit.parents:
+        continue
+      print str(commit)
+      all_blobs = commit.get_all_blobs()
+      all_blobs_size = sum(b.size for b in all_blobs)
+      total_blobs_count += len(all_blobs)
+      total_blobs_size += all_blobs_size
+
+      if options.verbose:
+        print '  Blobs %d (%s)' % (len(all_blobs), Kb(all_blobs_size))
+    print
+    print 'Blobs introduced by all root commits: %d, %s' % (
+        total_blobs_count, Kb(total_blobs_size))
+    print '=================================================================='
+
+    print
+    print '======================= REACHABLE COMMITS ========================'
+    for commit in sorted(commits.itervalues(), key=lambda x:x.timestamp):
+      if not commit.parents:
+        continue
+      print str(commit)
+      if options.verbose:
+        new_blobs = commit.get_new_blobs()
+        print '  New blobs: %d (%s)' % (len(new_blobs),
+                                        Kb(sum(b.size for b in new_blobs)))
+    print '=================================================================='
+
+  if options.list_files:
+    print
+    print '============================= FILES =============================='
+    if options.verbose:
+      for blob in sorted(blobs.itervalues(), key=lambda x:x.size):
+        name = blob.name if blob.name != '?' else '? ' + blob.get_snippet()[:38]
+        print '%s  %-10s %s' % (blob.abbrev, Kb(blob.size), name)
+    else:
+      grouped_blobs = {}  # file_name -> [count, total_size]
+      for blob in blobs.itervalues():
+        grouped_blobs.setdefault(blob.name, [0, 0])
+        grouped_blobs[blob.name][0] += 1
+        grouped_blobs[blob.name][1] += blob.size
+      for name, stat in sorted(grouped_blobs.iteritems(), key=lambda x:x[1][1]):
+        print '%-10s revs:%-8d %s' % (Kb(stat[1]), stat[0], name)
+    print '=================================================================='
+
+  if options.list_orphan_blobs:
+    print
+    print '========================== ORPHAN BLOBS =========================='
+    orphan_blobs_count, orphan_blobs_size = (0, 0)
+    for blob in sorted(orphan_blobs, key=lambda x:x.size):
+      orphan_blobs_count += 1
+      orphan_blobs_size += blob.size
+      print '%s %-6s %s' % (blob.abbrev, Kb(blob.size), blob.get_snippet()[:32])
+    print
+    print 'Total orphan blobs: %d, %s' % (orphan_blobs_count,
+                                          Kb(orphan_blobs_size))
+    print '=================================================================='
+
+  if options.list_orphan_trees:
+    print
+    print '========================== ORPHAN TREES =========================='
+    for tree in orphan_trees:
+      print tree.abbrev, ' '.join(sorted(tree.children.keys()))[0:53]
+      if options.list_trees_contents:
+        print tree.ls()
+    print '=================================================================='
+
+def Abbrev(sha_bytes):
+  return sha_bytes.encode('hex')[0:12]
+
+def Kb(bytes):
+  return str(bytes / 1024) + 'K'
+
+class GitObject(object):
+  def __init__(self, sha):
+    self.sha = sha
+    self.parents = set()
+    self.parent_commits = set()
+    self.direct_parent_commits = set()
+
+  @property
+  def abbrev(self):
+    return Abbrev(self.sha)
+
+  def __str__(self):
+    return '%s[%s]' % (type(self), self.abbrev)
+
+
+class GitFile(GitObject):
+  def __init__(self, sha, size, data):
+    super(GitFile, self).__init__(sha)
+    self.size = size
+    self.data = data
+    self.names = set()
+
+  def get_snippet(self):
+    return ''.join(c for c in self.data if ord(c) > 31 and ord (c) < 128)
+
+  @property
+  def name(self):
+    return list(self.names)[0] if self.names else '?'
+
+
+class GitTree(GitObject):
+  def __init__(self, sha, data):
+    super(GitTree, self).__init__(sha)
+    # children contains everything and is populated in the pre-graph phase.
+    self.children = {}  # name -> sha
+
+    # These are populated after the graph phase.
+    self.files = {}  # name -> GitFile
+    self.subtrees = {}  #name -> GitTree
+    self.unknowns = {}  # name -> sha
+
+    # Deserialize the tree object.
+    TOK_PROT, TOK_FNAME, TOK_SHA = range(0,3)
+    state = TOK_PROT
+    fname = ''
+    child_sha = ''
+    for c in data:
+      if state == TOK_PROT:
+        if c == ' ':
+          state = TOK_FNAME
+      elif state == TOK_FNAME:
+        if c != '\0':
+          fname += c
+        else:
+          state = TOK_SHA
+      elif state == TOK_SHA:
+        child_sha += c
+        if len(child_sha) == 20:
+          self.children[fname] = child_sha
+          fname = ''
+          child_sha = ''
+          state = TOK_PROT
+
+  def ls(self):
+    s = ''
+    # for c in self.parent_commits:
+    #   print ' ', c
+    for name, f in sorted(self.files.iteritems()):
+      s += '   * %s %s\n' % (f.abbrev, name)
+    for name, sha in sorted(self.unknowns.iteritems()):
+      s += '   ? %s %s\n' % (Abbrev(sha), name)
+    for name, d in sorted(self.subtrees.iteritems()):
+      s += '   / %s %s\n' % (d.abbrev, name)
+    return s
+
+  def get_all_blobs(self):
+    def get_all_blobs_recursive(tree):
+      files = set(tree.files.itervalues())
+      for subtree in tree.subtrees.itervalues():
+        files.update(get_all_blobs_recursive(subtree))
+      return files
+    return get_all_blobs_recursive(self)
+
+class GitCommit(GitObject):
+  def __init__(self, sha, data):
+    super(GitCommit, self).__init__(sha)
+    self.author = '?'
+    self.timestamp = 0
+    self.title = '?'
+    self.tree = None
+    self.treeish = None
+    self.parentish = set()
+    # Deserialize the commit object.
+    next_line_is_descr = False
+    for line in data.splitlines():
+      if line.startswith('tree '):
+        self.treeish = line[5:].decode('hex')
+      elif line.startswith('author '):
+        self.author = line.split(' ')[1]
+        self.timestamp = int(line.split('> ')[1].split(' ')[0])
+      elif line.startswith('parent '):
+        self.parentish.add(line[7:].decode('hex'))
+      elif line == '':
+        next_line_is_descr = True
+      elif next_line_is_descr:
+        self.title = line
+        break
+
+  def get_all_blobs(self):
+    return self.tree.get_all_blobs() if self.tree else set()
+
+  def get_new_blobs(self):
+    new_blobs = self.get_all_blobs()
+    for par_commit in self.parents:
+      new_blobs -= par_commit.get_all_blobs()
+    return new_blobs
+
+  def __str__(self):
+    return '%s %s %-10s %s' % (datetime.fromtimestamp(self.timestamp).date(),
+        self.abbrev, self.author[:10], self.title[:38])
+
+if __name__ == "__main__":
+  main()
+  sys.exit(0)
