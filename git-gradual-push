@@ -1,0 +1,70 @@
+#!/usr/bin/env python
+# -*- mode:python -*-
+
+# Copyright (c) 2014 Primiano Tucci -- www.primianotucci.com
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# * Redistributions of source code must retain the above copyright notice, this
+#   list of conditions and the following disclaimer.
+# * Redistributions in binary form must reproduce the above copyright notice,
+#   this list of conditions and the following disclaimer in the documentation
+#   and/or other materials provided with the distribution.
+# * The name of Primiano Tucci may not be used to endorse or promote products
+#   derived from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+import os
+import subprocess
+import sys
+
+
+_HIDDEN_REF = 'refs/hidden/tmpupload'
+
+
+def main():
+  if len(sys.argv) < 4:
+    print ('%s <remote> <local-branch> <remote-branch> ' +
+        '[max-commits-per-push=20000]') % sys.argv[0]
+    print 'E.g., %s origin master refs/heads/master 20000' % sys.argv[0]
+    return 1
+
+  remote, local_branch, remote_branch = sys.argv[1:4]
+  chunk_size = int(sys.argv[4]) if len(sys.argv) > 4 else 20000
+
+  print ('Remember to: git config credential.helper \'cache --timeout=3600\' ' +
+      'to avoid surprises')
+
+  print 'Reading rev-list for branch ', local_branch
+  revs = subprocess.check_output(['git', 'rev-list', local_branch]).splitlines()
+
+  chunks = range(0, len(revs), chunk_size)
+  print 'Got %d revisions. Uploading in %d chunks' % (len(revs), len(chunks))
+  chunk_count = 0
+  for i in chunks:
+    rev_idx = max(len(revs) - i - chunk_size, 0)
+    rev = revs[rev_idx]
+    chunk_count += 1
+    print '\nPush [%d/%d] (%d-th rev) %s -> %s' % (
+        chunk_count, len(chunks), rev_idx, rev[:12], _HIDDEN_REF)
+    subprocess.call(['git', 'push', remote, '+%s:%s' % (rev, _HIDDEN_REF)])
+
+  print 'Final push to the actual branch (%s) + cleanup tmp ref' % remote_branch
+  subprocess.call(['git', 'push', remote, '+%s:%s :%s' % (
+      local_branch, remote_branch, _HIDDEN_REF)])
+
+
+if __name__ == "__main__":
+  main()
+  sys.exit(0)
