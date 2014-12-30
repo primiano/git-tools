@@ -30,7 +30,7 @@ import subprocess
 import sys
 
 
-_HIDDEN_REF = 'refs/hidden/tmpupload'
+_TMP_REF = 'refs/hidden/tmpupload'
 
 
 def main():
@@ -57,12 +57,13 @@ def main():
     rev = revs[rev_idx]
     chunk_count += 1
     print '\nPush [%d/%d] (%d-th rev) %s -> %s' % (
-        chunk_count, len(chunks), rev_idx, rev[:12], _HIDDEN_REF)
-    subprocess.call(['git', 'push', remote, '+%s:%s' % (rev, _HIDDEN_REF)])
+        chunk_count, len(chunks), rev_idx, rev[:12], _TMP_REF)
+    subprocess.check_call(['git', 'push', remote, '+%s:%s' % (rev, _TMP_REF)])
 
-  print 'Final push to the actual branch (%s) + cleanup tmp ref' % remote_branch
-  subprocess.call(['git', 'push', remote, '+%s:%s :%s' % (
-      local_branch, remote_branch, _HIDDEN_REF)])
+  print '\nFinal push to the actual branch (%s) + cleanup.' % remote_branch
+  subprocess.check_call(['git', 'push', remote,
+                         '+%s:%s' % (local_branch, remote_branch),
+                         ':%s' % _TMP_REF])
 
 
 if __name__ == "__main__":
