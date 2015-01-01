@@ -52,10 +52,14 @@ def main():
   chunks = range(0, len(revs), chunk_size)
   print 'Got %d revisions. Uploading in %d chunks' % (len(revs), len(chunks))
   chunk_count = 0
+  skip = int(os.getenv('SKIP', 0))
   for i in chunks:
+    chunk_count += 1
+    if skip:
+      skip -= 1
+      continue
     rev_idx = max(len(revs) - i - chunk_size, 0)
     rev = revs[rev_idx]
-    chunk_count += 1
     print '\nPush [%d/%d] (%d-th rev) %s -> %s' % (
         chunk_count, len(chunks), rev_idx, rev[:12], _TMP_REF)
     subprocess.check_call(['git', 'push', remote, '+%s:%s' % (rev, _TMP_REF)])
