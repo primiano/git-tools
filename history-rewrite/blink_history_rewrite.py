@@ -231,8 +231,8 @@ def _RewriteCommits(revs):
       sys.stdout.flush()
 
   print '\n'
-  print 'Your new HEAD is %s (which replaced %s)' % (last_rewritten_parent,
-                                                     last_parent)
+  print 'Your new head is %s (which corresponds to %s)' % (
+      last_rewritten_parent, last_parent)
 
 
 def main():

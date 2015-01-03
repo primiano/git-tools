@@ -192,7 +192,7 @@ repo as it will not generate loose files for objects that are already part of a
       done
 
 
-At this point, the objects/ folder has been filled with 2.8 million files.
+At this point, the objects/ folder has been filled with the 2.8 million files.
 Note that git uses a two-level fs structure to store objects. For instance, the
 object `9038fef784dacafdcfdce03fb12b90647bb52d2e` ends up into
 `objects/90/38fef784dacafdcfdce03fb12b90647bb52d2e`.
@@ -352,5 +352,23 @@ Which produces this awesome rewrite:
     Step 2: Rewriting commits serially
     168352 / 168352 Commits rewritten (8216.1 commits/sec), ETA: 00h:00m:00s
 
-    Your new HEAD is 0b5424070e3006102e0036deea1e2e263b871eaa
-    (which replaced 88ac847721047fbc15ee964887bb23fc3cd6a34c)
+    Your new head is 0b5424070e3006102e0036deea1e2e263b871eaa
+    (which corresponds to 88ac847721047fbc15ee964887bb23fc3cd6a34c)
+
+
+It will write the new git objects for the rewritten history into
+/mnt/git-objects.
+
+First of all let's run a git fsck:
+
+    $ export GIT_ALTERNATE_OBJECT_DIRECTORIES=/mnt/git-objects
+    $ git fsck --strict 0b5424070e3006102e0036deea1e2e263b871eaa
+
+At this point this can become new master:
+
+    $ git update-ref refs/heads/master 0b5424070e3006102e0036deea1e2e263b871eaa
+
+And the new repo can be finally repacked:
+
+    $ git reflog expire --expire=now --all
+    $ git repack -a -d
