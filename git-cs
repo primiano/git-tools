@@ -1,0 +1,305 @@
+#!/usr/bin/env python
+# -*- mode:python -*-
+# Copyright (c) 2015 Primiano Tucci -- www.primianotucci.com
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# * Redistributions of source code must retain the above copyright notice, this
+#   list of conditions and the following disclaimer.
+# * Redistributions in binary form must reproduce the above copyright notice,
+#   this list of conditions and the following disclaimer in the documentation
+#   and/or other materials provided with the distribution.
+# * The name of Primiano Tucci may not be used to endorse or promote products
+#   derived from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+import hashlib
+import optparse
+import os
+import multiprocessing
+import re
+import signal
+import sys
+import time
+
+sys.path.append(os.path.join(os.path.dirname(__file__), 'wjet'))
+import wjet
+
+
+_EXCLUDE_DIRS = ({'.git', '.svn'})
+_GIT_CS_EXT = '.gitcs'
+_GIT_CS_EXT_LEN = -len(_GIT_CS_EXT)
+_GCS_BASE_URL = 'https://storage.googleapis.com'
+_CONCURRENT_DLOADS = 12
+_BIN_EXTS = ({'.aif', '.bin', '.bmp', '.cur', '.gif', '.icm', '.ico', '.jpeg',
+              '.jpg', '.m4a', '.m4v', '.mov', '.mp3', '.mp4', '.mpg', '.oga',
+              '.ogg', '.ogv', '.otf', '.pdf', '.png', '.sitx', '.swf', '.tiff',
+              '.ttf', '.wav', '.webm', '.webp', '.woff', '.woff2', '.zip'})
+
+
+class Stats:
+  MIN_UPDATE_INTERVAL_S = 0.25
+
+  def __init__(self, num_connections):
+    self.files_scanned = 0
+    self.files_to_download = 0
+    self.files_downloaded = 0
+    self.total_bytes_downloaded = 0  # can be < written if srv supports gzip.
+    self.total_bytes_written = 0
+    self._did_print_banner = False
+    self._num_connections = num_connections
+    self._last_print_time = 0
+    self._start_time = 0
+
+  def Update(self, flush=False):
+    if not sys.stdout.isatty():
+      return
+    now = time.time()
+    self._start_time = now if not self._start_time else self._start_time
+    if not self._did_print_banner:
+      self._did_print_banner = True
+      print """
+   Local .gitcs files         Network (%d concurrent connections)
++-----------+------------+  +---------+----------+-------+--------+
+| # Scanned | # To dload |  | # Dload | MB Dload |  MB/s | gzip %% |
++-----------+------------+  +---------+----------+-------+--------+""" % (
+          self._num_connections)
+
+    if now - self._last_print_time < Stats.MIN_UPDATE_INTERVAL_S and not flush:
+      return
+    self._last_print_time = now
+    total_mb_downloaded = self.total_bytes_downloaded / 1048576.0
+    print '\r| %9d | %10d |  | %7d | %8.1f | %5.1f | %6.2f |' % (
+        self.files_scanned,
+        self.files_to_download,
+        self.files_downloaded,
+        total_mb_downloaded,
+        total_mb_downloaded / max((now - self._start_time), 1),
+        1.0 * self.total_bytes_written / max(self.total_bytes_downloaded, 1)),
+    if flush:
+      print '\n'
+    sys.stdout.flush()
+
+
+def _WriteFileAtomic(path, contents):
+  with open(path + '.tmp', 'wb') as fd:
+    fd.write(contents)
+  os.rename(path + '.tmp', path)
+
+
+def _GetSHA1(path):
+  """Return a Git blobish for a given file (using Git's SHA-1 algorithm)"""
+  IO_BLOCK_SIZE = 65536
+  hlib = hashlib.sha1()
+  with open(path, 'rb') as fd:
+    fd.seek(0, os.SEEK_END)
+    size = fd.tell()
+    fd.seek(0, os.SEEK_SET)
+    hlib.update('blob %d\x00' % size)
+    while True:
+      data = fd.read(IO_BLOCK_SIZE)
+      if data:
+        hlib.update(data)
+      if len(data) < IO_BLOCK_SIZE:
+        break
+  return hlib.hexdigest()
+
+
+def _Stat(path):
+  if not os.path.exists(path):
+    return None
+  stat = os.lstat(path)
+  return stat.st_mtime, stat.st_size
+
+
+def _OsWalkFiles(topdir, file_name_matcher, stats=None):
+  for dirpath, dirnames, filenames in os.walk(topdir):
+    # Don't recurse in _EXCLUDE_DIRS (in the way sugested by os.walk docs).
+    # TODO further exclusions by env vars / .dotfile.
+    dirnames[:] = [d for d in dirnames if d not in _EXCLUDE_DIRS]
+    for filename in filenames:
+      if not file_name_matcher(filename):
+        continue
+      path = os.path.join(dirpath, filename)
+      if stats:
+        stats.files_scanned += 1
+        stats.Update()
+      yield path
+
+
+def _ShouldDownloadFile(gitcs_path):
+  GITCS_RE = r'^src gs://(.+)/([a-f0-9]+).blob$'
+  with open(gitcs_path) as ref_fd:
+    line = ref_fd.readline()
+    m = re.match(GITCS_RE, line)
+    if not m:
+      print 'Skipping %s. It doesn\'t contain a valid ref (%s)' % (gitcs_path,
+                                                                   line[:32])
+      return
+    ref_path, ref_hash = m.groups()
+    # Check if the file is already there and consistent.
+    bin_path = gitcs_path[:_GIT_CS_EXT_LEN]
+    if os.path.exists(bin_path) and _GetSHA1(bin_path) == ref_hash:
+      return None
+    remote_path = '/%s/%s.blob' % (ref_path, ref_hash)
+    return remote_path, bin_path
+
+
+def _ScanForMissingFiles(paths_iterable, stats):
+  pool = multiprocessing.Pool(multiprocessing.cpu_count() * 2)
+  for res in pool.imap_unordered(_ShouldDownloadFile, paths_iterable):
+    # res can be either None (nothing to be done for the file) or a tuple
+    # (remote_path, local_path) of a file to to be downloaded.
+    if not res:
+      continue
+    stats.files_to_download += 1
+    stats.Update()
+    yield res
+  pool.close()
+  pool.join()
+
+
+def _IsBinaryFile(filename):
+  _, ext = os.path.splitext(filename)
+  ext = ext.lower()
+  return ext in _BIN_EXTS
+
+
+def _IsGitcsFile(filename):
+  return filename.endswith(_GIT_CS_EXT)
+
+
+def _GetStatusForBinaryOrGitcsFile(path):
+  if _IsGitcsFile(path):
+    gitcs_path = path
+    bin_path = path[:_GIT_CS_EXT_LEN]
+    is_bin_file = False
+  else:
+    bin_path = path
+    gitcs_path = path + _GIT_CS_EXT
+    is_bin_file = True
+
+  if is_bin_file and not os.path.exists(gitcs_path):
+    status = '+'
+  elif not is_bin_file and not os.path.exists(bin_path):
+    status = '-'
+  elif _ShouldDownloadFile(gitcs_path):
+    status = 'M'
+  else:
+    return None
+  return bin_path, status
+
+
+def _CMDStatus(root_dir):
+  # Stage 1: Scan local folders and yield file paths of .gitcs files.
+  fs_iter = _OsWalkFiles(root_dir,
+                         lambda f: _IsBinaryFile(f) or _IsGitcsFile(f))
+
+  pool = multiprocessing.Pool(multiprocessing.cpu_count() * 2)
+  changes = {}
+  time_last_print = 0
+  for res in pool.imap_unordered(_GetStatusForBinaryOrGitcsFile, fs_iter):
+    # res can be either None (nothing to be done for the file) or a tuple
+    # (path, status) of a changed file.
+    if not res:
+      continue
+    path, status = res
+    changes.setdefault(status, []).append(path)
+    now = time.time()
+    if now - time_last_print > 0.025:
+      time_last_print = now
+      print '\rScanning. Found %6d files. Stats: %s' % (
+          sum(len(x) for x in changes.itervalues()),
+          '\t'.join(('%s:%6d' % (s, len(f)) for s,f in changes.iteritems()))),
+      sys.stdout.flush()
+
+  pool.close()
+  pool.join()
+  print '\r%80s\r' % ''
+  for status, paths in sorted(changes.iteritems()):
+    for path in paths:
+      print status, path
+
+
+def _CMDSync(root_dir):
+  num_dload_jobs = int(os.getenv('GITCS_DLOAD_PAR', _CONCURRENT_DLOADS))
+  if num_dload_jobs != _CONCURRENT_DLOADS:
+    print('Warning!: The env. var GITCS_DLOAD_PAR is overriding the default ' +
+          'number of concurrent downloads (%d) ' % _CONCURRENT_DLOADS)
+
+  stats = Stats(num_dload_jobs)
+
+  # Stage 1: Scan local folders and yield file paths of .gitcs files.
+  fs_iter = _OsWalkFiles(root_dir, _IsGitcsFile, stats)
+
+  # Stage 2: Yield tuples (/remote/path /local/path) for missing binary files (
+  # of existing but with mismatching SHA1).
+  scan_iter = None
+  if fs_iter:
+    scan_iter = _ScanForMissingFiles(fs_iter, stats)
+
+  # Stage 3: Download the files produced by Stage 2.
+  download_iter = None
+  if scan_iter:
+    download_iter = wjet.DownloadMany(_GCS_BASE_URL, scan_iter, num_dload_jobs)
+
+  errors = 0
+  if download_iter:
+    for jres in download_iter:
+      if jres.error:
+        print 'Error %s while attempting to download %s' % (jres.error,
+                                                            jres.remote_path)
+        errors += 1
+      stats.files_downloaded += 1
+      stats.total_bytes_downloaded += jres.bytes_downloaded
+      stats.total_bytes_written += jres.bytes_written
+      stats.Update()
+
+  stats.Update(flush=True)
+  if errors:
+    print '\nGot %d errors while syncing.' % errors
+  return errors
+
+
+def _SignalHandler(_signal, _frame):
+  cur_proc = multiprocessing.current_process()
+  if not (cur_proc and cur_proc.daemon):
+    sys.stderr.write('\nAborted by user!\n')
+    sys.exit(0)
+
+
+def main():
+  signal.signal(signal.SIGINT, _SignalHandler)
+
+  parser = optparse.OptionParser(usage='%prog status | sync')
+  (_, args) = parser.parse_args()
+
+  cmd = args[0] if args else None
+  errors = 0
+
+  if cmd == 'status':
+    _CMDStatus(os.getcwd())
+
+  elif cmd == 'sync':
+    errors = _CMDSync(os.getcwd())
+
+  else:
+    parser.print_usage()
+    errors = 1
+
+  return 0 if not errors else 1
+
+
+if __name__ == '__main__':
+  sys.exit(main())
