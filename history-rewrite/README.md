@@ -41,8 +41,8 @@ as a prerequisite.
 Problem statement
 -----------------
 The problem I am trying to solve here is the following: the Blink repo has been
-historically been stuffed with hundreds of thousands of binary files (e.g.,
-.png, and others), which got updated fairly frequently.
+historically been stuffed with hundreds of thousands of binary files (.png,
+and others media files), which got updated fairly frequently.
 This is notoriously bad for Git.
 
 These days I was wondering: what if we always kept those binaries out of the
@@ -58,9 +58,9 @@ The specific large file offloading technique is beyond the scope of this post.
 For the sake of this reading, my goal is replacing all these binary files in
 the repo with textual urls.
 More in details, what I want to achieve is reconstructing a similar repo with an
-identical history (w.r.t commits and authors) modulo the following tree / blob
-modifications:
- - Replace each .png file (and other 30 exts.) introduced by each commit
+identical history (w.r.t commits and authors) with the following alterations:
+
+ - Replace each binary file introduced by each commit
    (but only under the /*Tests/ dirs) with a cheap reference file containing a
    URL (pointing to a GCS bucket).
  - Add the 31 binary extensions to each .gitignore files under the /*Tests/ dirs
@@ -119,7 +119,7 @@ but it just doesn't scale.
 **Delta-compression:** Git stores objects in large, delta-compressed archives
 called packfiles. This is great for day by day use, as it reduces sensibly
 the disk space required. However, for heavy object I/O, having to walk the delta
-chains causes non-negligible overheads.
+chains introduces substantial overheads.
 
 **Disk I/O:** even with a 2xSSD RAID and a large availability of page-cache,
 performing a high number of writes (to store the rewritten reference blobs and
@@ -201,11 +201,11 @@ object `9038fef784dacafdcfdce03fb12b90647bb52d2e` ends up into
 Mangling git objects in python
 ------------------------------
 The loose objects expansion paves the way to very powerful and easy rewrites.
-Warm up you engines, here comes the most tough piece of git black magic: writing
- Git objects.
+Warm up you engines, here comes the most tough piece of git black magic:
+directly writing objects using python.
 
 [This page of the Git Community Book](http://schacon.github.io/gitbook/1_the_git_object_model.html)
-has an excellent (visual and textual) explanation of the object model for
+given an excellent (visual and textual) explanation of the object model for
 blobs (files), trees (dirs) and commits.
 I have only a few remarks worth adding:
 
@@ -222,10 +222,10 @@ reason why a blob-ish (`git hash-object file`) != `sha1sum file`.
 
 **Entries in a tree are sorted** and the sorting logic is terribly awkward.
 Define awkward?
-*If you have two blobs in a tree, named foo and foo-bar, their correct ordering
+If you have two blobs in a tree, named foo and foo-bar, their correct ordering
 is [foo, foo-bar], as one would naturally expect.
 If you have two subtrees in a tree, with the same names, the correct ordering
-is [foo-bar, foo] (^__^).*
+is [foo-bar, foo] ^__^.
 The short version of the story is that, for legacy reasons, tree-entries are
 sorted as if their names ends with a trailing slash (but the name in the parent
 tree object does NOT have a trailing slash).
@@ -298,7 +298,7 @@ resulting tree-ishes will be different and they will point to different files.
 If we want to get really fancy, we can then keep a shared cache of translated
 trees to further speed up the process.
 
-As a matter of facts, the python code looks very straightforward:
+As a matter of facts, the python code for doing that looks very straightforward:
 
     def _RewriteTrees(trees):  # a list of root tree-ishes [d001...d999]
       pool = multiprocessing.Pool(multiprocessing.cpu_count() * 2)
@@ -308,14 +308,14 @@ As a matter of facts, the python code looks very straightforward:
           print '\r%d / %d Trees rewritten' (done, pending),
           sys.stdout.flush()
 
-Where `_TranslateOneTree` contains the logic that strips out the .png files:
+Where `_TranslateOneTree` contains the logic that strips out binary files files:
 
     def _TranslateOneTree(root_sha1, in_tests_dir=False):
       for mode, fname, sha1 in ReadGitTree(root_sha1, DIRS.ORIGOBJS):
         if mode[0] == '1':  # It's a file
           _, ext = os.path.splitext(fname)
           if in_tests_dir:
-            if ext.lower() == '.png':
+            if ext.lower() in _BINARY_FILES_EXTS:
               csfname = sha1.hex + '.blob'
               CopyGitBlobIntoFile(sha1, DIRS.GCS + csfname, DIRS.ORIGOBJS)
               csref = 'src gs://blink-gitcs/' + csfname + '\n'
