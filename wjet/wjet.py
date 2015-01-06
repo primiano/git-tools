@@ -44,8 +44,9 @@ class DownloadManyException(Exception):
 
 
 class DownloadJobResult:
-  def __init__(self, remote_path):
+  def __init__(self, remote_path, local_path):
     self.remote_path = remote_path
+    self.local_path = local_path
     self.bytes_downloaded = 0
     self.bytes_written = 0
     self.error = 0  # TODO restructure
@@ -83,7 +84,7 @@ def _ResetConnectionForCurrentWorker():
 def _DownloadWorkerJob(args):
   IO_BLOCK_SIZE = 16384
   remote_path, local_path = args
-  res = DownloadJobResult(remote_path)
+  res = DownloadJobResult(remote_path, local_path)
   worker = _GetCurrentWorker()
   for retry_backoff_sec in [0.1, 0]:  ###################################### [0.5, 2, 5]
     conn = worker._http_conn

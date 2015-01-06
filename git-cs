@@ -257,9 +257,13 @@ def _CMDSync(root_dir):
   errors = 0
   if download_iter:
     for jres in download_iter:
+      expected_sha1 = re.match('.*/(\w+)\.blob', jres.remote_path).group(1)
       if jres.error:
         print 'Error %s while attempting to download %s' % (jres.error,
                                                             jres.remote_path)
+        errors += 1
+      elif _GetSHA1(jres.local_path) != expected_sha1:
+        print 'SHA1 mismatch for ', jres.remote_path
         errors += 1
       stats.files_downloaded += 1
       stats.total_bytes_downloaded += jres.bytes_downloaded
