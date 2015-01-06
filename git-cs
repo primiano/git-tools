@@ -40,8 +40,8 @@ import wjet
 _EXCLUDE_DIRS = ({'.git', '.svn'})
 _GIT_CS_EXT = '.gitcs'
 _GIT_CS_EXT_LEN = -len(_GIT_CS_EXT)
-_GCS_BASE_URL = 'https://storage.googleapis.com'
-_CONCURRENT_DLOADS = 12
+_GCS_BASE_URL = os.getenv('GITCS_BASE_URL', 'http://storage.googleapis.com')
+_CONCURRENT_DLOADS = 15
 _BIN_EXTS = ({'.aif', '.bin', '.bmp', '.cur', '.gif', '.icm', '.ico', '.jpeg',
               '.jpg', '.m4a', '.m4v', '.mov', '.mp3', '.mp4', '.mpg', '.oga',
               '.ogg', '.ogv', '.otf', '.pdf', '.png', '.sitx', '.swf', '.tiff',

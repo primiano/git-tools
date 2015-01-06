@@ -27,6 +27,7 @@
 import httplib
 import logging
 import multiprocessing
+import os
 import sys
 import time
 import zlib
@@ -65,7 +66,13 @@ def _ResetConnectionForCurrentWorker():
     worker._http_conn.close()
   except:
     pass
-  if worker._http_host.startswith('https://'):
+
+  proxy = os.getenv('GITCS_PROXY')
+  worker._http_req_prefix = ''
+  if proxy:
+    worker._http_conn = httplib.HTTPSConnection(proxy)
+    worker._http_req_prefix = worker._http_host
+  elif worker._http_host.startswith('https://'):
     worker._http_conn = httplib.HTTPSConnection(worker._http_host[8:])
   else:
     host = worker._http_host.replace('http://', '')
@@ -77,10 +84,11 @@ def _DownloadWorkerJob(args):
   IO_BLOCK_SIZE = 16384
   remote_path, local_path = args
   res = DownloadJobResult(remote_path)
+  worker = _GetCurrentWorker()
   for retry_backoff_sec in [0.1, 0]:  ###################################### [0.5, 2, 5]
-    conn = _GetCurrentWorker()._http_conn
-    conn.request('GET', remote_path, headers={'Connection': 'keep-alive',
-                                              'Accept-Encoding': 'gzip'})
+    conn = worker._http_conn
+    conn.request('GET', worker._http_req_prefix + remote_path,
+        headers={'Connection': 'keep-alive', 'Accept-Encoding': 'gzip'})
     resp = conn.getresponse(buffering=True)
 
     # Retry logic.
