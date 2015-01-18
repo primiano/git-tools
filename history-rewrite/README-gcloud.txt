@@ -5,6 +5,11 @@ find . -type f > /tmp/blobs
 gsutil -m  -h "Cache-Control:public, max-age=31536000" \
   cp -a public-read -z blob -I gs://blink-gitcs/ < /tmp/blobs
 
+Amazon S3:
+Get https://github.com/twpayne/s3-parallel-put
+~/s3p --bucket=blink-gitcs --put=stupid --content-type=octect/stream --gzip --secure --grant public-read --header="Cache-Control:public, max-age=31536000" .
+
+
 GCE VM
 ------
 gcloud compute instances create "blink-git" \
