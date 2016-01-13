@@ -3,6 +3,7 @@ A collection of git tools.
 
 ##git-gdrive
 git-gdrive allows to use Google Drive as a way to exchange patchsets.
+Prerequisites: `pip install --user pydrive`
 
  - `git gdrive push` is the equivalent of `git format-patch` + upload to gdrive;
  - `git gdrive pull` is the equivalent of download from gdrive + `git am`
