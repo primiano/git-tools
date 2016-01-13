@@ -48,6 +48,21 @@ CLIENT_CONFIG = {
 }
 CLIENT_CONFIG['client_secret'] = CLIENT_CONFIG['client_secret'][::-1]
 
+def run_git_cmd(*args):
+  if run_git_cmd.git_bin is None:
+    candidates = ['git', 'git.bat']
+    while candidates:
+      try:
+        run_git_cmd.git_bin = candidates[0]
+        subprocess.check_output([run_git_cmd.git_bin, '--version'])
+        break
+      except:
+        candidates = candidates[1:]
+        if not candidates:
+          print 'Could not find a git binary to execute'
+  print 'Running git', ' '.join(args)
+  return subprocess.check_output((run_git_cmd.git_bin,) + args)
+run_git_cmd.git_bin = None
 
 def authorize(force_auth):
   credentials_file = os.path.expanduser('~/.git-gdrive.credentials')
@@ -97,9 +112,8 @@ def main():
 
   if args.command == 'push':
     rev_range = extra_args or ['@{upstream}']
-    cmd = ['git', 'format-patch', '--stdout'] + rev_range
-    patch = subprocess.check_output(cmd)
-    cur_branch_name = subprocess.check_output(['git', 'rev-parse',  '--abbrev-ref', 'HEAD']).strip()
+    patch = run_git_cmd('format-patch', '--stdout', *rev_range)
+    cur_branch_name = run_git_cmd('rev-parse',  '--abbrev-ref', 'HEAD').strip()
     now = time.strftime('%Y-%m-%d_%H-%M')
     title = '%s-%s-%s.patch' % (getpass.getuser(), cur_branch_name, now)
     print 'Uploading /%s/%s' % (GDRIVE_DIR_NAME, title)
@@ -126,9 +140,7 @@ def main():
     print 'Pulling /%s/%s' % (GDRIVE_DIR_NAME, file_to_pull['title'])
     tmp_path = os.path.join(tempfile.gettempdir(), file_to_pull['title'])
     patch_content = file_to_pull.GetContentFile(tmp_path)
-    cmd = ['git', 'am', '-3', tmp_path]
-    print 'Running', ' '.join(cmd)
-    subprocess.check_output(cmd)
+    run_git_cmd('am', '-3', tmp_path)
     os.unlink(tmp_path)
 
 
