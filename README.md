@@ -1,6 +1,12 @@
 #git-tools
 A collection of git tools.
 
+##git-gdrive
+git-gdrive allows to use Google Drive as a way to exchange patchsets.
+
+ - `git gdrive push` is the equivalent of `git format-patch` + upload to gdrive;
+ - `git gdrive pull` is the equivalent of download from gdrive + `git am`
+
 ##git-gradual-push
 git-gradual-push, as the name suggests, allows to push large revision ranges
 in chunks (read: generating multiple push operations). This is to deal with
