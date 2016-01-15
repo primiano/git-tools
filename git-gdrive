@@ -76,7 +76,7 @@ class GitGDrive(object):
                 OAUTH2_CLIENT_ID, OAUTH2_CLIENT_SECRET, OAUTH2_SCOPE,
                 approval_prompt='force')
             credentials = oauth2client.tools.run_flow(flow, cred_store, args)
-            print('Storing credentials to ', cred_file)
+            print('Storing credentials to %s' % cred_file)
         return credentials
 
     def get_or_create_gdrive_dir(self):
@@ -107,7 +107,7 @@ class GitGDrive(object):
             print('Uploading a patch consisting of %s commits (%s):' % (
                 len(revlist), revrange))
             for row in revlist:
-                print('    ', row)
+                print('    %s' % row)
             print()
         if len(revlist) > 10:
             ret = input('Continue y/[n]: ')
@@ -152,7 +152,7 @@ class GitGDrive(object):
         for num, entry in enumerate(file_list, 1):
             print('    %d) %s' % (num, entry['title']))
         print('')
-        file_to_pull = input('Enter id or file name, just ENTER to pull 1): ')
+        file_to_pull = raw_input('Enter id or name, just ENTER to pull 1): ')
         file_to_pull = file_to_pull or '1'
         if file_to_pull.isdigit():
             file_to_pull = file_list[int(file_to_pull) - 1]
@@ -199,7 +199,7 @@ class GitGDrive(object):
     def run_git(self, args, verbose=False, quiet_on_failure=False):
         cmd = [self.gitcmd] + args
         if verbose:
-            print('Running', ' '.join(cmd))
+            print('Running %s' % ' '.join(cmd))
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE)
         (stdout, stderr) = proc.communicate()
