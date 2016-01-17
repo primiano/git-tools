@@ -2,8 +2,12 @@
 A collection of git tools.
 
 ##git-gdrive
-git-gdrive allows to use Google Drive as a way to exchange patchsets.
-Prerequisites: `pip install --user pydrive`
+git-gdrive allows to use Google Drive as a way to exchange patchsets.  
+In essence it's `git format-patch` / `git am` but based on Google Drive.  
+This project has been packaged and moved to
+[https://github.com/primiano/git-gdrive](github.com/primiano/git-gdrive)
+
+`pip install --user git-gdrive`
 
  - `git gdrive push` is the equivalent of `git format-patch` + upload to gdrive;
  - `git gdrive pull` is the equivalent of download from gdrive + `git am`
